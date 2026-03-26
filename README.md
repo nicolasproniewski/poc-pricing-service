@@ -1,6 +1,6 @@
 # POC Pricing Service
 
-A lightweight pricing service that stores BTC/USD spot prices and SOFR overnight rates in PostgreSQL and exposes simple GET endpoints for other services to query.
+A lightweight pricing service that stores BTC/USD spot prices and SOFR rates (overnight, 1-month, 3-month) in PostgreSQL and exposes simple GET endpoints for other services to query.
 
 ---
 
@@ -10,6 +10,8 @@ A lightweight pricing service that stores BTC/USD spot prices and SOFR overnight
 |---|---|---|
 | BTC/USD price | CoinGecko → Kraken WS → Yahoo Finance | Every 60 minutes (configurable) |
 | SOFR overnight rate | NY Fed → FRED API | Once daily at 8:15am ET (weekdays) |
+| SOFR 1-month average | NY Fed → FRED API | Once daily at 8:15am ET (weekdays) |
+| SOFR 3-month average | NY Fed → FRED API | Once daily at 8:15am ET (weekdays) |
 
 Prices are persisted to a local PostgreSQL database. A FastAPI server exposes read endpoints.
 
@@ -29,14 +31,16 @@ CoinGecko (REST) → Kraken WS cache → Yahoo Finance (last resort)
 - **Kraken WebSocket** — a persistent WS connection runs in the background at all times, caching the latest BTC/USD price. No rate limits. Used as fallback if CoinGecko fails 3× in a row, or as an immediate read if the cache is fresh (<2 min old).
 - **Yahoo Finance** — true last resort only, via the `yfinance` library. Slower than the other two (web scrape based).
 
-### SOFR Rate — Simple Try/Fallback
+### SOFR Rates — Simple Try/Fallback
+
+All three SOFR tenors are fetched in a single cycle from the same source.
 
 ```
 NY Fed JSON API (no auth) → FRED API (free key required)
 ```
 
-- **NY Fed** — authoritative source, no API key needed. Published ~8:00am ET on weekdays. The service fetches at 8:15am ET to ensure the rate is available.
-- **FRED** — St. Louis Fed fallback. Typically lags NY Fed by 1–3 hours. Requires a free API key.
+- **NY Fed** — authoritative source, no API key needed. Published ~8:00am ET on weekdays. The service fetches at 8:15am ET to ensure the rate is available. Overnight comes from the SOFR endpoint; 1m and 3m averages come from the SOFRAI (SOFR Average Index) endpoint and are stored in the same table with a `rate_type` discriminator.
+- **FRED** — St. Louis Fed fallback. Typically lags NY Fed by 1–3 hours. Requires a free API key. Uses series `SOFR`, `SOFR30DAYAVG`, and `SOFR90DAYAVG`.
 
 If both sources fail on a given day, a CRITICAL log is emitted and no row is written (existing data is preserved).
 
@@ -82,6 +86,7 @@ cp .env.example .env
 | BTC failure threshold | 3 consecutive failures before switching provider |
 | Kraken WS cache staleness limit | 2 minutes |
 | SOFR fetch time | 8:15am ET, weekdays only |
+| SOFR tenors stored | overnight, 1m (30-day avg), 3m (90-day avg) |
 | SOFR provider priority | NY Fed → FRED |
 
 ---
@@ -139,23 +144,26 @@ Returns up to `limit` records (max 1440), optionally filtered by `since`.
 ### SOFR
 
 ```
-GET /v1/sofr/latest
+GET /v1/sofr/latest?rate_type=overnight   (default)
+GET /v1/sofr/latest?rate_type=1m
+GET /v1/sofr/latest?rate_type=3m
 ```
-Returns the most recently stored SOFR rate.
+Returns the most recently stored rate for the requested tenor. `rate_type` defaults to `overnight` if omitted.
 
 ```json
 {
-  "rate_date": "2026-03-20",
-  "rate_pct": "3.6200",
+  "rate_date": "2026-03-25",
+  "rate_type": "overnight",
+  "rate_pct": "3.6300",
   "source": "nyfed",
-  "fetched_at": "2026-03-24T09:20:08Z"
+  "fetched_at": "2026-03-26T08:15:02Z"
 }
 ```
 
 ```
-GET /v1/sofr/history?limit=30
+GET /v1/sofr/history?rate_type=1m&limit=30
 ```
-Returns up to `limit` records (max 365).
+Returns up to `limit` records for the requested tenor (max 365). Valid `rate_type` values: `overnight`, `1m`, `3m`.
 
 ### Health
 

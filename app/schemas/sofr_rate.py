@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class SofrRateOut(BaseModel):
     rate_date: date
+    rate_type: str
     rate_pct: Decimal
     source: str
     fetched_at: datetime
